@@ -67,6 +67,7 @@ public class JavaNativeCodeSandbox implements CodeSandbox{
         executeCodeRequest.setLanguage("java");
         ExecuteCodeResponse executeCodeResponse = javaNativeCodeSandbox.executeCode(executeCodeRequest);
         System.out.println(executeCodeResponse);
+        System.out.println("hello");
     }
 
     @Override
