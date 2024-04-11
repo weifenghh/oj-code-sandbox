@@ -1,1 +1,2 @@
-spring.application.name=oj-code-sandbox
+server:
+  port: 8111
