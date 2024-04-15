@@ -16,7 +16,6 @@ import com.yupi.ojcodesandbox.model.ExecuteCodeResponse;
 import com.yupi.ojcodesandbox.model.ExecuteMessage;
 import com.yupi.ojcodesandbox.model.JudgeInfo;
 import com.yupi.ojcodesandbox.utils.ProcessUtils;
-import org.springframework.stereotype.Component;
 
 import java.io.Closeable;
 import java.io.File;
@@ -35,8 +34,7 @@ import java.util.concurrent.TimeUnit;
  * @Version 1.0
  * @Since 1.0
  */
-@Component
-public class JavaDockerCodeSandbox extends JavaCodeSandboxTemplate{
+public class JavaDockerCodeSandboxOld implements CodeSandbox{
     /**
      * 1. 把用户的代码保存为文件
      * 2. 编译代码，得到class文件
@@ -46,31 +44,64 @@ public class JavaDockerCodeSandbox extends JavaCodeSandboxTemplate{
      * 6. 错误处理，提升程序健壮性
      */
 
+    private static final String GLOBAL_CODE_DIR_NAME = "tmpCode";
+    private static final String GLOBAL_JAVA_CLASS_NAME = "Main.java";
+    private static final String MY_SECURITY_MANAGER = "MySecurityManager";
     private static final long TIME_OUT = 5000L;
+    private static final String SECURITY_MANAGER_PATH = "D:\\yupi\\OJ\\code\\oj-code-sandbox\\src\\main\\resources\\security";
     private static final boolean FIRST_INIT = true;
 
-//    public static void main(String[] args) {
-//        JavaDockerCodeSandbox javaNativeCodeSandbox = new JavaDockerCodeSandbox();
-//        ExecuteCodeRequest executeCodeRequest = new ExecuteCodeRequest();
-//        executeCodeRequest.setInputList(Arrays.asList("1 2","1 3"));
-////        String code = ResourceUtil.readStr("testCode/simpleComputeArgs/Main.java", StandardCharsets.UTF_8);
-////        String code = ResourceUtil.readStr("testCode/unsafe/SleepError.java", StandardCharsets.UTF_8);
-//        String code = ResourceUtil.readStr("testCode/unsafe/RunFileError.java", StandardCharsets.UTF_8);
-//        executeCodeRequest.setCode(code);
-//        executeCodeRequest.setLanguage("java");
-//        ExecuteCodeResponse executeCodeResponse = javaNativeCodeSandbox.executeCode(executeCodeRequest);
-//        System.out.println(executeCodeResponse);
-//    }
+    public static void main(String[] args) {
+        JavaDockerCodeSandboxOld javaNativeCodeSandbox = new JavaDockerCodeSandboxOld();
+        ExecuteCodeRequest executeCodeRequest = new ExecuteCodeRequest();
+        executeCodeRequest.setInputList(Arrays.asList("1 2","1 3"));
+//        String code = ResourceUtil.readStr("testCode/simpleComputeArgs/Main.java", StandardCharsets.UTF_8);
+//        String code = ResourceUtil.readStr("testCode/unsafe/SleepError.java", StandardCharsets.UTF_8);
+        String code = ResourceUtil.readStr("testCode/unsafe/RunFileError.java", StandardCharsets.UTF_8);
+        executeCodeRequest.setCode(code);
+        executeCodeRequest.setLanguage("java");
+        ExecuteCodeResponse executeCodeResponse = javaNativeCodeSandbox.executeCode(executeCodeRequest);
+        System.out.println(executeCodeResponse);
+    }
 
-    /**
-     * 重写 创建容器，把文件复制到容器内部，信心代码执行，保证代码的安全隔离
-     * @param compileFile  编译文件
-     * @param inputList   输入用例
-     * @return
-     */
     @Override
-    public List<ExecuteMessage> runFile(File compileFile, List<String> inputList) {
-        String userCodeParentPath = compileFile.getParentFile().getAbsolutePath();
+    public ExecuteCodeResponse executeCode(ExecuteCodeRequest executeCodeRequest) {
+        //用户发送输入用例，代码，语言，沙箱进行判断
+        List<String> inputList = executeCodeRequest.getInputList();
+        String code = executeCodeRequest.getCode();
+        String language = executeCodeRequest.getLanguage();
+
+//        FoundWord foundWord = wordTree.matchWord(code);
+//        if(foundWord != null){
+//            System.out.println(foundWord.getFoundWord());
+//            return null;
+//        }
+
+        //1.把用户的代码保存为文件按
+        //1.1获取系统当前用户所在的工作目录
+        String userDir = System.getProperty("user.dir");
+        String globalCodePathName = userDir + File.separator + GLOBAL_CODE_DIR_NAME;
+        //1.2 判断全局代码目录是否存在，没有则新建
+        if(!FileUtil.exist(globalCodePathName)){
+            FileUtil.mkdir(globalCodePathName);
+        }
+        //1.3 把用户的代码隔离存放
+        //存放代码的父目录
+        String userCodeParentPath = globalCodePathName + File.separator + UUID.randomUUID();
+        //存放代码的实际文件
+        String userCodePath = userCodeParentPath + File.separator + GLOBAL_JAVA_CLASS_NAME;
+        File userCodeFile = FileUtil.writeString(code,userCodePath, StandardCharsets.UTF_8);
+
+        //2. 编译代码 得到class文件
+        String compileCmd = String.format("javac -encoding utf-8 %s", userCodeFile.getAbsolutePath());
+        try {
+            Process compileProcess = Runtime.getRuntime().exec(compileCmd);
+            ExecuteMessage executeMessage = ProcessUtils.runProcessAndGetMessage(compileProcess, "编译");
+            System.out.println(executeMessage);
+        } catch (Exception e) {
+            return getErrorResponse(e);
+        }
+
         //3. 创建容器，上传编译文件
         DockerClient dockerClient = DockerClientBuilder.getInstance().build();
         String image = "openjdk:8-alpine";
@@ -218,7 +249,62 @@ public class JavaDockerCodeSandbox extends JavaCodeSandboxTemplate{
             executeMessage.setExitValue(1);
             executeMessageList.add(executeMessage);
         }
-        return executeMessageList;
+
+        //4. 收集整理输出结果
+        ExecuteCodeResponse executeCodeResponse = new ExecuteCodeResponse();
+        ArrayList<String> outputList = new ArrayList<>();
+        long maxTime = 0;
+        long memory = 0;
+        for (ExecuteMessage executeMessage : executeMessageList){
+            String errorMessage = executeMessage.getErrorMessage();
+            //执行中存在错误
+            if(StrUtil.isNotBlank(errorMessage)){
+                executeCodeResponse.setMessage(errorMessage);
+                executeCodeResponse.setStatus(3);
+                break;
+            }
+            outputList.add(executeMessage.getMessage());
+            Long time = executeMessage.getTime();
+            memory = executeMessage.getMemory();
+            if(time != null){
+                maxTime = Math.max(maxTime,time);
+            }
+        }
+        //全部正常运行完成
+        if(outputList.size() == executeMessageList.size()){
+            executeCodeResponse.setStatus(1);
+        }
+        executeCodeResponse.setOutputList(outputList);
+
+        JudgeInfo judgeInfo = new JudgeInfo();
+        judgeInfo.setTimeLimit(maxTime);
+        //要借助第三方库来获取内存占用
+        judgeInfo.setMemoryLimit(memory);
+
+        executeCodeResponse.setJudgeInfo(judgeInfo);
+
+        //5. 文件清理
+        if(userCodeFile.getParentFile() != null){
+            boolean del = FileUtil.del(userCodeParentPath);
+            System.out.println("删除" + (del ? "成功" : "失败"));
+        }
+
+
+        //6.错误处理，提升程序健壮性
+
+        return executeCodeResponse;
     }
+
+
+    private ExecuteCodeResponse getErrorResponse(Throwable e){
+        ExecuteCodeResponse executeCodeResponse = new ExecuteCodeResponse();
+        executeCodeResponse.setOutputList(new ArrayList<>());
+        executeCodeResponse.setMessage(e.getMessage());
+        // 1:程序执行真诚   2:代码沙箱内部错误   3:代码执行错误
+        executeCodeResponse.setStatus(2);
+        executeCodeResponse.setJudgeInfo(new JudgeInfo());
+        return executeCodeResponse;
+    }
+
 
 }
